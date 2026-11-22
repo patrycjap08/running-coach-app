@@ -37,6 +37,11 @@ type Run = {
   description: string;
 };
 
+type DashboardActivity = {
+  activity: Record<string, string>;
+  analysis: { summary?: string; classification?: string } | null;
+};
+
 const runs: Run[] = [
   {
     id: "benchmark-demo",
@@ -80,6 +85,28 @@ const weeklyBars = [48, 66, 52, 78, 62, 87, 74, 91, 68, 80, 72, 96];
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const SESSION_STORAGE_KEY = "running-coach-session";
 
+function mapDashboardActivities(payload: { activities?: DashboardActivity[] }): Run[] {
+  return (payload.activities || []).map(({ activity, analysis }) => {
+    const distance = Number(activity.distance_m || 0);
+    const movingSeconds = Number(activity.moving_s || activity.elapsed_s || 0);
+    const paceSeconds = Number(activity.avg_pace_s_km || 0);
+    const classification = analysis?.classification || "unknown";
+    const status: RunStatus = classification === "intervals" || classification === "tempo" || classification === "race" ? "above" : classification === "easy" ? "easy" : "steady";
+    return {
+      id: activity.activity_id,
+      date: activity.start_date_local ? new Date(`${activity.start_date_local}T12:00:00`).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" }) : "Brak daty",
+      title: activity.title || "Aktywność",
+      type: classification === "easy" ? "Easy" : classification === "intervals" ? "Interwały" : classification === "tempo" ? "Tempo" : classification === "long" ? "Długi bieg" : "Aktywność",
+      distance: distance ? `${(distance / 1000).toLocaleString("pl-PL", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km` : "—",
+      pace: paceSeconds ? `${Math.floor(paceSeconds / 60)}:${String(Math.round(paceSeconds % 60)).padStart(2, "0")}` : "—",
+      heartRate: activity.avg_hr_bpm || "—",
+      duration: movingSeconds ? `${Math.floor(movingSeconds / 60)}:${String(Math.round(movingSeconds % 60)).padStart(2, "0")}` : "—",
+      status,
+      description: analysis?.summary || "Analiza AI oczekuje na wykonanie.",
+    };
+  });
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
@@ -87,6 +114,13 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [sessionToken, setSessionToken] = useState(() => sessionStorage.getItem(SESSION_STORAGE_KEY));
   const [showLogin, setShowLogin] = useState(false);
+  const [liveRuns, setLiveRuns] = useState<Run[] | null>(null);
+
+  async function loadDashboard(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/dashboard`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) return;
+    setLiveRuns(mapDashboardActivities(await response.json()));
+  }
 
   async function sync() {
     if (!API_BASE_URL) {
@@ -111,7 +145,9 @@ export default function App() {
         throw new Error("Sesja wygasła. Zaloguj się ponownie.");
       }
       if (!response.ok) throw new Error(payload.detail || "Synchronizacja nie powiodła się.");
-      setToast(payload.new_count || payload.changed_count ? `Zaktualizowano Garmin: ${payload.new_count || 0} nowych, ${payload.changed_count || 0} zmienionych aktywności.` : "Dane są aktualne.");
+      await loadDashboard(sessionToken);
+      const analysisWarning = Array.isArray(payload.analysis_errors) && payload.analysis_errors.length ? " Część analiz czeka na ponowienie." : "";
+      setToast(payload.new_count || payload.changed_count ? `Zaktualizowano Garmin: ${payload.new_count || 0} nowych, ${payload.changed_count || 0} zmienionych aktywności.${analysisWarning}` : `Dane są aktualne.${analysisWarning}`);
       window.setTimeout(() => setToast(null), 5000);
     } catch (error) {
       setToast(error instanceof Error ? error.message : "Synchronizacja nie powiodła się.");
@@ -175,8 +211,8 @@ export default function App() {
           </div>
         </header>
 
-        {page === "dashboard" && <Dashboard onOpenRun={(run) => { setSelectedRun(run); setPage("runs"); }} onOpenChat={() => goTo("chat")} />}
-        {page === "runs" && <RunsPage selectedRun={selectedRun} onSelect={setSelectedRun} />}
+        {page === "dashboard" && <Dashboard runsData={liveRuns || runs} onOpenRun={(run) => { setSelectedRun(run); setPage("runs"); }} onOpenChat={() => goTo("chat")} />}
+        {page === "runs" && <RunsPage runsData={liveRuns || runs} selectedRun={selectedRun} onSelect={setSelectedRun} />}
         {page === "chat" && <ChatPage />}
         {page === "settings" && <SettingsPage />}
       </main>
@@ -219,7 +255,7 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
   return <button className={`nav-button ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
-function Dashboard({ onOpenRun, onOpenChat }: { onOpenRun: (run: Run) => void; onOpenChat: () => void }) {
+function Dashboard({ runsData, onOpenRun, onOpenChat }: { runsData: Run[]; onOpenRun: (run: Run) => void; onOpenChat: () => void }) {
   return (
     <div className="page-stack">
       <section className="hero-card">
@@ -261,8 +297,8 @@ function Dashboard({ onOpenRun, onOpenChat }: { onOpenRun: (run: Run) => void; o
       </div>
 
       <section className="card recent-card">
-        <div className="section-heading"><div><div className="eyebrow">OSTATNIE TRENINGI</div><h2>Co wydarzyło się ostatnio</h2></div><button className="text-button" onClick={() => onOpenRun(runs[0])}>Wszystkie treningi <ChevronRight size={15} /></button></div>
-        <div className="run-list">{runs.map((run) => <RunRow key={run.id} run={run} onClick={() => onOpenRun(run)} />)}</div>
+        <div className="section-heading"><div><div className="eyebrow">OSTATNIE TRENINGI</div><h2>Co wydarzyło się ostatnio</h2></div><button className="text-button" onClick={() => runsData[0] && onOpenRun(runsData[0])}>Wszystkie treningi <ChevronRight size={15} /></button></div>
+        <div className="run-list">{runsData.length ? runsData.map((run) => <RunRow key={run.id} run={run} onClick={() => onOpenRun(run)} />) : <div className="empty-more">Brak aktywności do wyświetlenia.</div>}</div>
       </section>
     </div>
   );
@@ -277,9 +313,9 @@ function RunRow({ run, onClick }: { run: Run; onClick: () => void }) {
   return <button className="run-row" onClick={onClick}><div className="run-date"><span className="run-day">{run.date.split(" ")[0]}</span><span>{run.date.split(" ").slice(1).join(" ")}</span></div><div className="run-main"><strong>{run.title}</strong><span>{run.type}</span></div><div className="run-stat"><span>Dystans</span><strong>{run.distance}</strong></div><div className="run-stat"><span>Tempo</span><strong>{run.pace}<small>/km</small></strong></div><div className={`status-tag ${run.status}`}>{statusLabel}</div><ChevronRight size={17} className="row-arrow" /></button>;
 }
 
-function RunsPage({ selectedRun, onSelect }: { selectedRun: Run | null; onSelect: (run: Run | null) => void }) {
+function RunsPage({ runsData, selectedRun, onSelect }: { runsData: Run[]; selectedRun: Run | null; onSelect: (run: Run | null) => void }) {
   if (selectedRun) return <RunDetail run={selectedRun} onBack={() => onSelect(null)} />;
-  return <div className="page-stack"><div className="page-intro"><div><p>Historia od 1 stycznia 2025</p><h2>Wszystkie aktywności</h2></div><div className="filter-row"><button className="filter active">Wszystkie</button><button className="filter">Bieganie</button><button className="filter">Ostatnie 30 dni</button></div></div><section className="card runs-page-card"><div className="run-list">{runs.map((run) => <RunRow key={run.id} run={run} onClick={() => onSelect(run)} />)}</div><div className="empty-more">Kolejne aktywności pojawią się po synchronizacji z Garmin Connect.</div></section></div>;
+  return <div className="page-stack"><div className="page-intro"><div><p>Historia od 1 stycznia 2025</p><h2>Wszystkie aktywności</h2></div><div className="filter-row"><button className="filter active">Wszystkie</button><button className="filter">Bieganie</button><button className="filter">Ostatnie 30 dni</button></div></div><section className="card runs-page-card"><div className="run-list">{runsData.map((run) => <RunRow key={run.id} run={run} onClick={() => onSelect(run)} />)}</div><div className="empty-more">Kolejne aktywności pojawią się po synchronizacji z Garmin Connect.</div></section></div>;
 }
 
 function RunDetail({ run, onBack }: { run: Run; onBack: () => void }) {

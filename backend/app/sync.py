@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .ai import AIAnalysisError, OpenAIAnalyzer
 from .config import Settings
 from .data_store import DataStoreError, GitHubDataStore
 from .garmin import GarminIntegrationError, GarminPersonalApi
@@ -184,10 +185,17 @@ def _csv(rows: list[dict[str, str]]) -> str:
 
 
 class GarminSync:
-    def __init__(self, settings: Settings, garmin: GarminPersonalApi, data_store: GitHubDataStore) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        garmin: GarminPersonalApi,
+        data_store: GitHubDataStore,
+        analyzer: OpenAIAnalyzer | None = None,
+    ) -> None:
         self.settings = settings
         self.garmin = garmin
         self.data_store = data_store
+        self.analyzer = analyzer or OpenAIAnalyzer(settings)
 
     def run(self) -> dict[str, Any]:
         if not sync_lock.acquire(blocking=False):
@@ -218,15 +226,83 @@ class GarminSync:
         existing = _read_rows(self.data_store.read_text("activities.csv"))
         new_count = 0
         changed_count = 0
+        candidates: list[dict[str, str]] = []
         for row in incoming:
             old = existing.get(row["activity_id"])
             if old is None:
                 new_count += 1
                 existing[row["activity_id"]] = row
+                candidates.append(row)
             elif old.get("source_fingerprint") != row["source_fingerprint"]:
                 changed_count += 1
                 row["imported_at"] = old.get("imported_at", imported_at)
                 existing[row["activity_id"]] = row
+                candidates.append(row)
+
+        pending_ids = {
+            str(activity_id)
+            for activity_id in state.get("pending_analysis_ids", [])
+            if activity_id
+        }
+        candidate_ids = {row["activity_id"] for row in candidates}
+        candidates.extend(
+            row
+            for activity_id, row in existing.items()
+            if activity_id in pending_ids and activity_id not in candidate_ids
+        )
+
+        candidates.sort(key=lambda item: (item.get("start_at_utc", ""), item["activity_id"]))
+        analysis_files: dict[str, str] = {}
+        analysis_errors: list[str] = []
+        analysis_count = 0
+        pending_analysis_ids: list[str] = []
+        analysis_candidates = candidates[-self.settings.recent_run_count :]
+        context_rows = sorted(existing.values(), key=lambda item: (item.get("start_at_utc", ""), item["activity_id"]))
+        for row in analysis_candidates:
+            if not _is_running(row):
+                row["analysis_status"] = "not_applicable"
+                continue
+            previous = [
+                candidate
+                for candidate in context_rows
+                if candidate.get("activity_id") != row.get("activity_id")
+                and candidate.get("start_at_utc", "") <= row.get("start_at_utc", "")
+            ][-self.settings.recent_run_count :]
+            try:
+                result = self.analyzer.analyze_activity(row, previous)
+            except AIAnalysisError as exc:
+                row["analysis_status"] = "pending"
+                pending_analysis_ids.append(row["activity_id"])
+                analysis_errors.append(f"{row['activity_id']}: {exc}")
+                continue
+            analysis_count += 1
+            row["analysis_status"] = "completed"
+            analysis_id = f"v1-{row['source_fingerprint'][:16]}"
+            activity_path_id = "".join(
+                character if character.isalnum() or character in "-_" else "_"
+                for character in row["activity_id"]
+            )
+            analysis_files[
+                f"analyses/{activity_path_id}/{analysis_id}.json"
+            ] = json.dumps(
+                {
+                    "schema_version": 1,
+                    "analysis_id": analysis_id,
+                    "activity_id": row["activity_id"],
+                    "input_fingerprint": row["source_fingerprint"],
+                    "prompt_version": "running-coach-analysis-v1",
+                    "model": self.settings.openai_model or "gpt-4o-mini",
+                    "generated_at": imported_at,
+                    "result": result,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n"
+
+        for row in candidates[:-self.settings.recent_run_count]:
+            if _is_running(row):
+                row["analysis_status"] = "pending"
+                pending_analysis_ids.append(row["activity_id"])
 
         rows = sorted(existing.values(), key=lambda item: (item.get("start_at_utc", ""), item["activity_id"]))
         latest = rows[-1] if rows else {}
@@ -237,6 +313,7 @@ class GarminSync:
             "download_watermark": imported_at,
             "latest_activity_id": latest.get("activity_id"),
             "latest_activity_start_at": latest.get("start_at_utc"),
+            "pending_analysis_ids": sorted(set(pending_analysis_ids)),
             "sync_revision": int(state.get("sync_revision", 0) or 0) + 1,
             "last_job": {
                 "status": "completed",
@@ -245,13 +322,17 @@ class GarminSync:
                 "end_date": end_date.isoformat(),
                 "new_count": new_count,
                 "changed_count": changed_count,
+                "analysis_count": analysis_count,
+                "analysis_errors": analysis_errors,
             },
         }
+        files = {
+            "activities.csv": _csv(rows),
+            "sync_state.json": json.dumps(next_state, ensure_ascii=False, indent=2) + "\n",
+            **analysis_files,
+        }
         commit_sha = self.data_store.commit_files(
-            {
-                "activities.csv": _csv(rows),
-                "sync_state.json": json.dumps(next_state, ensure_ascii=False, indent=2) + "\n",
-            },
+            files,
             f"sync Garmin activities {end_date.isoformat()}",
         )
         return {
@@ -259,6 +340,8 @@ class GarminSync:
             "new_count": new_count,
             "changed_count": changed_count,
             "activity_count": len(incoming),
+            "analysis_count": analysis_count,
+            "analysis_errors": analysis_errors,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "commit_sha": commit_sha,
@@ -292,3 +375,7 @@ def _parse_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _is_running(row: dict[str, str]) -> bool:
+    return row.get("sport") in {"running", "treadmill_running", "track_running", "trail_running"}

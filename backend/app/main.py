@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -10,7 +11,7 @@ from .auth import create_session_token, require_session, verify_app_password
 from .config import get_settings
 from .data_store import GitHubDataStore
 from .garmin import GarminIntegrationError, GarminPersonalApi, default_activity_window
-from .sync import SyncError, sync_data
+from .sync import SyncError, _read_rows, sync_data
 
 
 settings = get_settings()
@@ -63,12 +64,47 @@ def dashboard(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> dict[str, object]:
     require_session(credentials, settings)
+    if not data_store.configured:
+        return {
+            "schema_version": 1,
+            "as_of": datetime.now(timezone.utc).date().isoformat(),
+            "status": "demo",
+            "message": "Repozytorium danych nie jest jeszcze skonfigurowane.",
+            "activities": [],
+        }
+    try:
+        rows = sorted(
+            _read_rows(data_store.read_text("activities.csv")).values(),
+            key=lambda row: (row.get("start_at_utc", ""), row.get("activity_id", "")),
+            reverse=True,
+        )[: settings.recent_run_count]
+        activities: list[dict[str, object]] = []
+        for row in rows:
+            activity_path_id = "".join(
+                character if character.isalnum() or character in "-_" else "_"
+                for character in row["activity_id"]
+            )
+            analysis_text = data_store.read_text_optional(
+                f"analyses/{activity_path_id}/v1-{row['source_fingerprint'][:16]}.json"
+            )
+            analysis: dict[str, object] | None = None
+            if analysis_text:
+                try:
+                    payload = json.loads(analysis_text)
+                    analysis = payload.get("result") if isinstance(payload, dict) else None
+                except json.JSONDecodeError:
+                    analysis = None
+            activities.append({"activity": row, "analysis": analysis})
+    except Exception as exc:
+        if isinstance(exc, (json.JSONDecodeError, KeyError, TypeError, ValueError)):
+            raise HTTPException(status_code=502, detail="Dane w repozytorium mają niepoprawny format.") from exc
+        raise HTTPException(status_code=502, detail="Nie udało się odczytać danych treningowych.") from exc
     return {
         "schema_version": 1,
         "as_of": datetime.now(timezone.utc).date().isoformat(),
-        "status": "demo",
-        "message": "Backend jest gotowy na podłączenie synchronizacji Garmin.",
-        "activities": [],
+        "status": "connected",
+        "message": "Dane z prywatnego repozytorium.",
+        "activities": activities,
     }
 
 

@@ -78,6 +78,14 @@ class GitHubDataStore:
         except (KeyError, TypeError, ValueError) as exc:
             raise DataStoreError(f"Plik {path} w repozytorium danych jest nieczytelny.") from exc
 
+    def read_text_optional(self, path: str) -> str | None:
+        try:
+            return self.read_text(path)
+        except DataStoreError as exc:
+            if str(exc) == "Nie znaleziono prywatnego repozytorium danych.":
+                return None
+            raise
+
     def commit_files(self, files: dict[str, str], message: str) -> str | None:
         """Commit several files in one Git Data API commit."""
 
