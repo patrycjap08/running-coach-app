@@ -39,8 +39,12 @@ class LoginResponse(BaseModel):
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, str]:
-    return {"status": "ok", "environment": settings.environment}
+def healthz() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "garmin_configured": garmin_api.configured,
+    }
 
 
 @app.post("/auth/login", response_model=LoginResponse)

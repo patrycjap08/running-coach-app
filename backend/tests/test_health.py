@@ -10,6 +10,7 @@ def test_healthz_is_public() -> None:
     response = client.get("/healthz")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert isinstance(response.json()["garmin_configured"], bool)
 
 
 def test_private_dashboard_requires_session() -> None:
