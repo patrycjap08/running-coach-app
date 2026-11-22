@@ -23,7 +23,3 @@ services:
         sync: false
       - key: GITHUB_DATA_TOKEN
         sync: false
-      - key: APP_PASSWORD_HASH
-        sync: false
-      - key: APP_SESSION_SIGNING_SECRET
-        sync: false

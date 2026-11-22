@@ -1,13 +1,9 @@
 import json
 from datetime import datetime, timezone
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
 
-from .auth import create_session_token, require_session, verify_app_password
 from .config import get_settings
 from .data_store import GitHubDataStore
 from .garmin import GarminIntegrationError, GarminPersonalApi, default_activity_window
@@ -17,7 +13,6 @@ from .sync import SyncError, _read_rows, sync_data
 settings = get_settings()
 garmin_api = GarminPersonalApi(settings)
 data_store = GitHubDataStore(settings)
-bearer_scheme = HTTPBearer(auto_error=False)
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
@@ -32,16 +27,6 @@ app.add_middleware(
 )
 
 
-class LoginRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=256)
-
-
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_at: datetime
-
-
 @app.get("/healthz")
 def healthz() -> dict[str, object]:
     return {
@@ -51,19 +36,8 @@ def healthz() -> dict[str, object]:
     }
 
 
-@app.post("/auth/login", response_model=LoginResponse)
-def login(payload: LoginRequest) -> LoginResponse:
-    if not verify_app_password(payload.password, settings):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Niepoprawne hasło.")
-    token, expires_at = create_session_token(settings)
-    return LoginResponse(access_token=token, expires_at=expires_at)
-
-
 @app.get("/api/dashboard")
-def dashboard(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> dict[str, object]:
-    require_session(credentials, settings)
+def dashboard() -> dict[str, object]:
     if not data_store.configured:
         return {
             "schema_version": 1,
@@ -109,12 +83,9 @@ def dashboard(
 
 
 @app.get("/api/garmin/status")
-def garmin_status(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> dict[str, object]:
+def garmin_status() -> dict[str, object]:
     """Check the Garmin key without exposing credentials or Garmin profile data."""
 
-    require_session(credentials, settings)
     if not garmin_api.configured:
         return {"configured": False, "connected": False, "message": "Klucz Garmin nie jest jeszcze skonfigurowany."}
 
@@ -127,12 +98,9 @@ def garmin_status(
 
 
 @app.post("/api/garmin/preview")
-def garmin_preview(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> dict[str, object]:
+def garmin_preview() -> dict[str, object]:
     """Read the recent activity count as a safe first sync verification step."""
 
-    require_session(credentials, settings)
     start_date, end_date = default_activity_window(settings)
     try:
         activities = garmin_api.list_activities(start_date=start_date, end_date=end_date)
@@ -149,12 +117,9 @@ def garmin_preview(
 
 
 @app.post("/api/sync")
-def sync(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> dict[str, object]:
+def sync() -> dict[str, object]:
     """Fetch and persist normalized Garmin summaries in the private data repo."""
 
-    require_session(credentials, settings)
     try:
         return sync_data(settings, garmin_api, data_store)
     except SyncError as exc:

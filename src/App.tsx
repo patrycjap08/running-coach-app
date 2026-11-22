@@ -1,5 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
-import "./login.css";
+import { useState, type ReactNode } from "react";
 import {
   Activity,
   BarChart3,
@@ -83,7 +82,6 @@ const runs: Run[] = [
 
 const weeklyBars = [48, 66, 52, 78, 62, 87, 74, 91, 68, 80, 72, 96];
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-const SESSION_STORAGE_KEY = "running-coach-session";
 
 function mapDashboardActivities(payload: { activities?: DashboardActivity[] }): Run[] {
   return (payload.activities || []).map(({ activity, analysis }) => {
@@ -112,12 +110,10 @@ export default function App() {
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [sessionToken, setSessionToken] = useState(() => sessionStorage.getItem(SESSION_STORAGE_KEY));
-  const [showLogin, setShowLogin] = useState(false);
   const [liveRuns, setLiveRuns] = useState<Run[] | null>(null);
 
-  async function loadDashboard(token: string) {
-    const response = await fetch(`${API_BASE_URL}/api/dashboard`, { headers: { Authorization: `Bearer ${token}` } });
+  async function loadDashboard() {
+    const response = await fetch(`${API_BASE_URL}/api/dashboard`);
     if (!response.ok) return;
     setLiveRuns(mapDashboardActivities(await response.json()));
   }
@@ -127,25 +123,14 @@ export default function App() {
       setToast("Backend nie jest jeszcze ustawiony dla tej wersji aplikacji.");
       return;
     }
-    if (!sessionToken) {
-      setShowLogin(true);
-      return;
-    }
     setIsSyncing(true);
     try {
       const response = await fetch(`${API_BASE_URL}/api/sync`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${sessionToken}` },
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        sessionStorage.removeItem(SESSION_STORAGE_KEY);
-        setSessionToken(null);
-        setShowLogin(true);
-        throw new Error("Sesja wygasła. Zaloguj się ponownie.");
-      }
       if (!response.ok) throw new Error(payload.detail || "Synchronizacja nie powiodła się.");
-      await loadDashboard(sessionToken);
+      await loadDashboard();
       const analysisWarning = Array.isArray(payload.analysis_errors) && payload.analysis_errors.length ? " Część analiz czeka na ponowienie." : "";
       setToast(payload.new_count || payload.changed_count ? `Zaktualizowano Garmin: ${payload.new_count || 0} nowych, ${payload.changed_count || 0} zmienionych aktywności.${analysisWarning}` : `Dane są aktualne.${analysisWarning}`);
       window.setTimeout(() => setToast(null), 5000);
@@ -154,21 +139,6 @@ export default function App() {
     } finally {
       setIsSyncing(false);
     }
-  }
-
-  async function login(password: string) {
-    const response = await fetch(`${API_BASE_URL}/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || "Logowanie nie powiodło się.");
-    sessionStorage.setItem(SESSION_STORAGE_KEY, payload.access_token);
-    setSessionToken(payload.access_token);
-    setShowLogin(false);
-    setToast("Zalogowano. Kliknij „Aktualizuj”, aby pobrać dane z Garmina.");
-    window.setTimeout(() => setToast(null), 5000);
   }
 
   function goTo(nextPage: Page) {
@@ -225,30 +195,8 @@ export default function App() {
       </nav>
 
       {toast && <div className="toast"><CircleHelp size={17} />{toast}<button onClick={() => setToast(null)} aria-label="Zamknij"><X size={15} /></button></div>}
-      {showLogin && <LoginDialog onLogin={login} onClose={() => setShowLogin(false)} />}
     </div>
   );
-}
-
-function LoginDialog({ onLogin, onClose }: { onLogin: (password: string) => Promise<void>; onClose: () => void }) {
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    setIsSubmitting(true);
-    try {
-      await onLogin(password);
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Logowanie nie powiodło się.");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><section className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title"><button className="modal-close" onClick={onClose} aria-label="Zamknij"><X size={17} /></button><div className="eyebrow">PRYWATNY DOSTĘP</div><h2 id="login-title">Zaloguj aplikację</h2><p>To osobne hasło aplikacji — nie hasło ani klucz Garmina.</p><form onSubmit={submit}><label>Hasło aplikacji<input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{error && <div className="login-error">{error}</div>}<button className="primary-button" type="submit" disabled={isSubmitting}>{isSubmitting ? "Loguję…" : "Zaloguj i kontynuuj"}</button></form></section></div>;
 }
 
 function NavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
