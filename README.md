@@ -41,10 +41,15 @@ cd backend
 pytest
 ```
 
+## GitHub Pages i Render
+
+Workflow `pages.yml` buduje frontend i publikuje wyłącznie katalog `dist`. Włącz GitHub Pages w ustawieniach repozytorium, wybierając publikowanie przez GitHub Actions.
+
+Plik `render.yaml` opisuje usługę FastAPI. Po utworzeniu Web Service na Renderze uzupełnij w zakładce **Environment** sekrety oznaczone jako `sync: false`, w szczególności `GARMIN_PERSONAL_API_KEY`. Sekrety nie są wpisywane do tego repozytorium.
+
 ## Następne etapy
 
 1. Dodać adapter Garmin Personal API i synchronizację przyrostową.
 2. Dodać GitHub Data API dla prywatnego repozytorium danych.
 3. Dodać analizę OpenAI Structured Outputs.
 4. Wdrożyć backend na Renderze i dopiero wtedy skonfigurować `GARMIN_PERSONAL_API_KEY`.
-

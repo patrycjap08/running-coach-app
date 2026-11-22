@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: running-coach-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: GITHUB_DATA_REPO
+        value: patrycjap08/running-coach-data
+      - key: GITHUB_DATA_BRANCH
+        value: main
+      - key: ALLOWED_ORIGINS
+        value: https://patrycjap08.github.io
+      - key: GARMIN_PERSONAL_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GITHUB_DATA_TOKEN
+        sync: false
+      - key: APP_PASSWORD_HASH
+        sync: false
+      - key: APP_SESSION_SIGNING_SECRET
+        sync: false
+
