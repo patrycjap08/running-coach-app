@@ -8,11 +8,14 @@ from pydantic import BaseModel, Field
 
 from .auth import create_session_token, require_session, verify_app_password
 from .config import get_settings
+from .data_store import GitHubDataStore
 from .garmin import GarminIntegrationError, GarminPersonalApi, default_activity_window
+from .sync import SyncError, sync_data
 
 
 settings = get_settings()
 garmin_api = GarminPersonalApi(settings)
+data_store = GitHubDataStore(settings)
 bearer_scheme = HTTPBearer(auto_error=False)
 app = FastAPI(
     title=settings.app_name,
@@ -105,5 +108,18 @@ def garmin_preview(
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "activity_count": len(activities),
-        "message": "Połączenie z Garminem działa. Zapis znormalizowanych danych będzie kolejnym krokiem synchronizacji.",
+        "message": "Połączenie z Garminem działa. To jest podgląd bez zapisu danych.",
     }
+
+
+@app.post("/api/sync")
+def sync(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> dict[str, object]:
+    """Fetch and persist normalized Garmin summaries in the private data repo."""
+
+    require_session(credentials, settings)
+    try:
+        return sync_data(settings, garmin_api, data_store)
+    except SyncError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
+import "./login.css";
 import {
   Activity,
   BarChart3,
@@ -76,20 +77,62 @@ const runs: Run[] = [
 ];
 
 const weeklyBars = [48, 66, 52, 78, 62, 87, 74, 91, 68, 80, 72, 96];
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const SESSION_STORAGE_KEY = "running-coach-session";
 
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [sessionToken, setSessionToken] = useState(() => sessionStorage.getItem(SESSION_STORAGE_KEY));
+  const [showLogin, setShowLogin] = useState(false);
 
-  function sync() {
+  async function sync() {
+    if (!API_BASE_URL) {
+      setToast("Backend nie jest jeszcze ustawiony dla tej wersji aplikacji.");
+      return;
+    }
+    if (!sessionToken) {
+      setShowLogin(true);
+      return;
+    }
     setIsSyncing(true);
-    window.setTimeout(() => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/sync`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        setSessionToken(null);
+        setShowLogin(true);
+        throw new Error("Sesja wygasła. Zaloguj się ponownie.");
+      }
+      if (!response.ok) throw new Error(payload.detail || "Synchronizacja nie powiodła się.");
+      setToast(payload.new_count || payload.changed_count ? `Zaktualizowano Garmin: ${payload.new_count || 0} nowych, ${payload.changed_count || 0} zmienionych aktywności.` : "Dane są aktualne.");
+      window.setTimeout(() => setToast(null), 5000);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Synchronizacja nie powiodła się.");
+    } finally {
       setIsSyncing(false);
-      setToast("Demo: synchronizacja zostanie połączona z Garminem po konfiguracji backendu.");
-      window.setTimeout(() => setToast(null), 4500);
-    }, 900);
+    }
+  }
+
+  async function login(password: string) {
+    const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "Logowanie nie powiodło się.");
+    sessionStorage.setItem(SESSION_STORAGE_KEY, payload.access_token);
+    setSessionToken(payload.access_token);
+    setShowLogin(false);
+    setToast("Zalogowano. Kliknij „Aktualizuj”, aby pobrać dane z Garmina.");
+    window.setTimeout(() => setToast(null), 5000);
   }
 
   function goTo(nextPage: Page) {
@@ -146,8 +189,30 @@ export default function App() {
       </nav>
 
       {toast && <div className="toast"><CircleHelp size={17} />{toast}<button onClick={() => setToast(null)} aria-label="Zamknij"><X size={15} /></button></div>}
+      {showLogin && <LoginDialog onLogin={login} onClose={() => setShowLogin(false)} />}
     </div>
   );
+}
+
+function LoginDialog({ onLogin, onClose }: { onLogin: (password: string) => Promise<void>; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await onLogin(password);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Logowanie nie powiodło się.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><section className="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title"><button className="modal-close" onClick={onClose} aria-label="Zamknij"><X size={17} /></button><div className="eyebrow">PRYWATNY DOSTĘP</div><h2 id="login-title">Zaloguj aplikację</h2><p>To osobne hasło aplikacji — nie hasło ani klucz Garmina.</p><form onSubmit={submit}><label>Hasło aplikacji<input autoFocus type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{error && <div className="login-error">{error}</div>}<button className="primary-button" type="submit" disabled={isSubmitting}>{isSubmitting ? "Loguję…" : "Zaloguj i kontynuuj"}</button></form></section></div>;
 }
 
 function NavButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
@@ -231,4 +296,3 @@ function ChatPage() {
 function SettingsPage() {
   return <div className="settings-grid"><section className="card settings-card"><div className="eyebrow">POŁĄCZENIE</div><h2>Źródła danych</h2><div className="connection-row"><div className="connection-logo garmin">G</div><div><strong>Garmin Connect Personal API</strong><span>Jeszcze nie skonfigurowano</span></div><span className="connection-status pending">Do ustawienia</span></div><p className="settings-help">Klucz Garmina dodasz w środowisku backendu, nie w kodzie aplikacji. Otrzymasz instrukcję przed pierwszą synchronizacją.</p></section><section className="card settings-card"><div className="eyebrow">PROFIL</div><h2>Twoje założenia</h2><label>Cel główny<input value="Półmaraton · marzec 2027" readOnly /></label><label>Liczba biegów w tygodniu<input value="3–4" readOnly /></label><label>Strefa czasowa<input value="Europe/Warsaw" readOnly /></label><button className="primary-button">Edytuj profil</button></section><section className="card settings-card wide"><div className="eyebrow">PRYWATNOŚĆ</div><h2>Twoje dane pozostają pod kontrolą</h2><div className="privacy-list"><span><Check size={15} /> Repozytorium danych jest prywatne</span><span><Check size={15} /> GPS zostanie usunięty przed analizą</span><span><Check size={15} /> Klucze API nie trafiają do frontendu</span></div></section></div>;
 }
-
