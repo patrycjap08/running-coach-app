@@ -18,8 +18,6 @@ class Settings(BaseSettings):
     github_data_token: str | None = None
     github_data_repo: str = "patrycjap08/running-coach-data"
     github_data_branch: str = "main"
-    app_password_hash: str | None = None
-    app_session_signing_secret: str | None = None
     allowed_origins: str = "http://localhost:5173"
     timezone: str = "Europe/Warsaw"
     history_start: str = "2025-01-01"
