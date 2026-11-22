@@ -1,6 +1,5 @@
 from functools import lru_cache
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +20,7 @@ class Settings(BaseSettings):
     github_data_branch: str = "main"
     app_password_hash: str | None = None
     app_session_signing_secret: str | None = None
-    allowed_origins: list[str] = ["http://localhost:5173"]
+    allowed_origins: str = "http://localhost:5173"
     timezone: str = "Europe/Warsaw"
     history_start: str = "2025-01-01"
     recent_run_count: int = 10
@@ -29,15 +28,10 @@ class Settings(BaseSettings):
     ai_max_input_tokens: int = 40000
     ai_max_output_tokens: int = 3500
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def parse_origins(cls, value: str | list[str]) -> list[str]:
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
+    def allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

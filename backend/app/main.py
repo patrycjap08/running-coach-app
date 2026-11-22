@@ -19,7 +19,7 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=settings.allowed_origins_list(),
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
@@ -61,4 +61,3 @@ def dashboard(
         "message": "Backend jest gotowy na podłączenie synchronizacji Garmin.",
         "activities": [],
     }
-
