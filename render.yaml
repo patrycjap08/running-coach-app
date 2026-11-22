@@ -2,6 +2,7 @@ services:
   - type: web
     name: running-coach-api
     runtime: python
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -24,4 +25,3 @@ services:
         sync: false
       - key: APP_SESSION_SIGNING_SECRET
         sync: false
-
