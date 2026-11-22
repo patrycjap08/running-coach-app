@@ -8,9 +8,11 @@ from pydantic import BaseModel, Field
 
 from .auth import create_session_token, require_session, verify_app_password
 from .config import get_settings
+from .garmin import GarminIntegrationError, GarminPersonalApi, default_activity_window
 
 
 settings = get_settings()
+garmin_api = GarminPersonalApi(settings)
 bearer_scheme = HTTPBearer(auto_error=False)
 app = FastAPI(
     title=settings.app_name,
@@ -60,4 +62,44 @@ def dashboard(
         "status": "demo",
         "message": "Backend jest gotowy na podłączenie synchronizacji Garmin.",
         "activities": [],
+    }
+
+
+@app.get("/api/garmin/status")
+def garmin_status(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> dict[str, object]:
+    """Check the Garmin key without exposing credentials or Garmin profile data."""
+
+    require_session(credentials, settings)
+    if not garmin_api.configured:
+        return {"configured": False, "connected": False, "message": "Klucz Garmin nie jest jeszcze skonfigurowany."}
+
+    try:
+        connection = garmin_api.check_connection()
+    except GarminIntegrationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"configured": True, **connection}
+
+
+@app.post("/api/garmin/preview")
+def garmin_preview(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> dict[str, object]:
+    """Read the recent activity count as a safe first sync verification step."""
+
+    require_session(credentials, settings)
+    start_date, end_date = default_activity_window(settings)
+    try:
+        activities = garmin_api.list_activities(start_date=start_date, end_date=end_date)
+    except GarminIntegrationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "status": "ready",
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "activity_count": len(activities),
+        "message": "Połączenie z Garminem działa. Zapis znormalizowanych danych będzie kolejnym krokiem synchronizacji.",
     }

@@ -9,6 +9,8 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: production
+      - key: PYTHON_VERSION
+        value: 3.12.14
       - key: GITHUB_DATA_REPO
         value: patrycjap08/running-coach-data
       - key: GITHUB_DATA_BRANCH
