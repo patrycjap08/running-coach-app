@@ -250,33 +250,35 @@ class GarminSync:
             for activity_id, row in existing.items()
             if activity_id in pending_ids and activity_id not in candidate_ids
         )
+        candidate_ids = {row["activity_id"] for row in candidates}
 
         candidates.sort(key=lambda item: (item.get("start_at_utc", ""), item["activity_id"]))
         analysis_files: dict[str, str] = {}
         analysis_errors: list[str] = []
         analysis_count = 0
         pending_analysis_ids: list[str] = []
-        analysis_candidates = candidates[-self.settings.recent_run_count :]
         context_rows = sorted(existing.values(), key=lambda item: (item.get("start_at_utc", ""), item["activity_id"]))
-        for row in analysis_candidates:
+        rolling_context: list[dict[str, Any]] = [
+            {"activity": row, "analysis": self._existing_analysis(row)}
+            for row in context_rows
+            if row["activity_id"] not in candidate_ids
+        ][-self.settings.recent_run_count :]
+        for row in candidates:
             if not _is_running(row):
                 row["analysis_status"] = "not_applicable"
+                rolling_context.append({"activity": row, "analysis": None})
                 continue
-            previous = [
-                candidate
-                for candidate in context_rows
-                if candidate.get("activity_id") != row.get("activity_id")
-                and candidate.get("start_at_utc", "") <= row.get("start_at_utc", "")
-            ][-self.settings.recent_run_count :]
             try:
-                result = self.analyzer.analyze_activity(row, previous)
+                result = self.analyzer.analyze_activity(row, rolling_context[-self.settings.recent_run_count :])
             except AIAnalysisError as exc:
                 row["analysis_status"] = "pending"
                 pending_analysis_ids.append(row["activity_id"])
                 analysis_errors.append(f"{row['activity_id']}: {exc}")
+                rolling_context.append({"activity": row, "analysis": None})
                 continue
             analysis_count += 1
             row["analysis_status"] = "completed"
+            rolling_context.append({"activity": row, "analysis": result})
             analysis_id = f"v1-{row['source_fingerprint'][:16]}"
             activity_path_id = "".join(
                 character if character.isalnum() or character in "-_" else "_"
@@ -290,7 +292,7 @@ class GarminSync:
                     "analysis_id": analysis_id,
                     "activity_id": row["activity_id"],
                     "input_fingerprint": row["source_fingerprint"],
-                    "prompt_version": "running-coach-analysis-v1",
+                    "prompt_version": "running-coach-analysis-v2",
                     "model": self.settings.openai_model or "gpt-4o-mini",
                     "generated_at": imported_at,
                     "result": result,
@@ -299,10 +301,25 @@ class GarminSync:
                 indent=2,
             ) + "\n"
 
-        for row in candidates[:-self.settings.recent_run_count]:
-            if _is_running(row):
-                row["analysis_status"] = "pending"
-                pending_analysis_ids.append(row["activity_id"])
+        form_summary: dict[str, Any] | None = self._read_form_summary()
+        form_summary_error: str | None = None
+        form_summary_files: dict[str, str] = {}
+        if any(_is_running(row) for row in candidates) or form_summary is None:
+            try:
+                form_summary = self.analyzer.analyze_form(rolling_context[-self.settings.recent_run_count :])
+                form_summary_files["form_summary.json"] = json.dumps(
+                    {
+                        "schema_version": 1,
+                        "generated_at": imported_at,
+                        "model": self.settings.openai_model or "gpt-4o-mini",
+                        "result": form_summary,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n"
+            except AIAnalysisError as exc:
+                form_summary_error = str(exc)
+                analysis_errors.append(f"form_summary: {exc}")
 
         rows = sorted(existing.values(), key=lambda item: (item.get("start_at_utc", ""), item["activity_id"]))
         latest = rows[-1] if rows else {}
@@ -324,12 +341,14 @@ class GarminSync:
                 "changed_count": changed_count,
                 "analysis_count": analysis_count,
                 "analysis_errors": analysis_errors,
+                "form_summary_error": form_summary_error,
             },
         }
         files = {
             "activities.csv": _csv(rows),
             "sync_state.json": json.dumps(next_state, ensure_ascii=False, indent=2) + "\n",
             **analysis_files,
+            **form_summary_files,
         }
         commit_sha = self.data_store.commit_files(
             files,
@@ -342,6 +361,7 @@ class GarminSync:
             "activity_count": len(incoming),
             "analysis_count": analysis_count,
             "analysis_errors": analysis_errors,
+            "form_summary": form_summary,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "commit_sha": commit_sha,
@@ -356,6 +376,34 @@ class GarminSync:
             days=self.settings.sync_lookback_days
         )
         return max(history_start, lookback_start)
+
+    def _existing_analysis(self, row: dict[str, str]) -> dict[str, Any] | None:
+        activity_path_id = "".join(
+            character if character.isalnum() or character in "-_" else "_"
+            for character in row["activity_id"]
+        )
+        analysis_text = self.data_store.read_text_optional(
+            f"analyses/{activity_path_id}/v1-{row['source_fingerprint'][:16]}.json"
+        )
+        if not analysis_text:
+            return None
+        try:
+            payload = json.loads(analysis_text)
+        except json.JSONDecodeError:
+            return None
+        result = payload.get("result") if isinstance(payload, dict) else None
+        return result if isinstance(result, dict) else None
+
+    def _read_form_summary(self) -> dict[str, Any] | None:
+        summary_text = self.data_store.read_text_optional("form_summary.json")
+        if not summary_text:
+            return None
+        try:
+            payload = json.loads(summary_text)
+        except json.JSONDecodeError:
+            return None
+        result = payload.get("result") if isinstance(payload, dict) else None
+        return result if isinstance(result, dict) else None
 
 
 def sync_data(settings: Settings, garmin: GarminPersonalApi, data_store: GitHubDataStore) -> dict[str, Any]:

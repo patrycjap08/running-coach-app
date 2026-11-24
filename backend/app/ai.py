@@ -44,6 +44,27 @@ ANALYSIS_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+FORM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "readiness_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "readiness_label": {"type": "string"},
+        "recommendation_title": {"type": "string"},
+        "recommendation_text": {"type": "string"},
+        "context_note": {"type": "string"},
+    },
+    "required": [
+        "summary",
+        "readiness_score",
+        "readiness_label",
+        "recommendation_title",
+        "recommendation_text",
+        "context_note",
+    ],
+    "additionalProperties": False,
+}
+
 
 class AIAnalysisError(RuntimeError):
     """A safe-to-display AI analysis error."""
@@ -57,7 +78,7 @@ class OpenAIAnalyzer:
     def configured(self) -> bool:
         return bool(self.settings.openai_api_key and self.settings.openai_api_key.strip())
 
-    def analyze_activity(self, activity: dict[str, str], context: list[dict[str, str]]) -> dict[str, Any]:
+    def analyze_activity(self, activity: dict[str, str], context: list[dict[str, Any]]) -> dict[str, Any]:
         if not self.configured:
             raise AIAnalysisError("OPENAI_API_KEY nie jest skonfigurowany.")
 
@@ -89,6 +110,40 @@ class OpenAIAnalyzer:
             },
             "max_output_tokens": self.settings.ai_max_output_tokens,
         }
+        return self._request_json(payload, ANALYSIS_SCHEMA)
+
+    def analyze_form(self, context: list[dict[str, Any]]) -> dict[str, Any]:
+        if not self.configured:
+            raise AIAnalysisError("OPENAI_API_KEY nie jest skonfigurowany.")
+
+        prompt = json.dumps({"activities": context}, ensure_ascii=False, separators=(",", ":"))
+        payload = {
+            "model": self.settings.openai_model or "gpt-4o-mini",
+            "store": False,
+            "instructions": (
+                "Jesteś ostrożnym trenerem biegania. Odpowiadaj po polsku. "
+                "Podsumuj aktualną formę wyłącznie na podstawie podanych aktywności i analiz. "
+                "Uwzględnij biegi oraz wpływ innych aktywności, ale nie analizuj ich osobno. "
+                "Nie diagnozuj, nie wymyślaj brakujących pomiarów i nie udawaj znajomości planu treningowego."
+            ),
+            "input": (
+                "Przygotuj krótkie podsumowanie formy w 1–2 zdaniach oraz jeden konkretny następny krok. "
+                "Ostatnie aktywności są na końcu listy, a wpisy niebiegowe służą wyłącznie jako kontekst.\n"
+                + prompt
+            ),
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "running_form_summary",
+                    "strict": True,
+                    "schema": FORM_SCHEMA,
+                }
+            },
+            "max_output_tokens": self.settings.ai_max_output_tokens,
+        }
+        return self._request_json(payload, FORM_SCHEMA)
+
+    def _request_json(self, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.settings.openai_api_key.strip()}",
             "Content-Type": "application/json",
@@ -124,12 +179,12 @@ class OpenAIAnalyzer:
                 else:
                     message = "OpenAI zwróciło błąd podczas analizy."
                 raise AIAnalysisError(message)
-            return self._parse_response(response.json())
+            return self._parse_response(response.json(), schema)
 
         raise AIAnalysisError("OpenAI chwilowo nie odpowiada. Analiza pozostaje oczekująca.")
 
     @staticmethod
-    def _parse_response(body: dict[str, Any]) -> dict[str, Any]:
+    def _parse_response(body: dict[str, Any], schema: dict[str, Any] = ANALYSIS_SCHEMA) -> dict[str, Any]:
         if body.get("status") == "incomplete" or body.get("incomplete_details"):
             raise AIAnalysisError("Odpowiedź OpenAI była niekompletna. Analiza pozostaje oczekująca.")
         if body.get("error"):
@@ -149,6 +204,6 @@ class OpenAIAnalyzer:
             result = json.loads(output_text)
         except (TypeError, json.JSONDecodeError) as exc:
             raise AIAnalysisError("OpenAI zwróciło odpowiedź poza oczekiwanym formatem.") from exc
-        if not isinstance(result, dict) or not all(key in result for key in ANALYSIS_SCHEMA["required"]):
+        if not isinstance(result, dict) or not all(key in result for key in schema["required"]):
             raise AIAnalysisError("OpenAI zwróciło niepełną analizę.")
         return result

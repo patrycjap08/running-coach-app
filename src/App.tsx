@@ -16,7 +16,6 @@ import {
   Sparkles,
   Timer,
   TrendingUp,
-  Trophy,
   X,
 } from "lucide-react";
 
@@ -35,11 +34,43 @@ type Run = {
   status: RunStatus;
   description: string;
   isRunning: boolean;
+  analysis: ActivityAnalysis | null;
+};
+
+type ActivityAnalysis = {
+  summary?: string;
+  classification?: string;
+  positives?: string[];
+  risks?: string[];
+  recommendation_text?: string;
+  confidence?: string;
 };
 
 type DashboardActivity = {
   activity: Record<string, string>;
-  analysis: { summary?: string; classification?: string } | null;
+  analysis: ActivityAnalysis | null;
+};
+
+type DashboardStats = {
+  week_distance_km: number;
+  month_distance_km: number;
+  run_count_week: number;
+  weekly_volume: { label: string; km: number }[];
+};
+
+type FormSummary = {
+  summary?: string;
+  readiness_score?: number;
+  readiness_label?: string;
+  recommendation_title?: string;
+  recommendation_text?: string;
+  context_note?: string;
+};
+
+type DashboardPayload = {
+  activities?: DashboardActivity[];
+  stats?: DashboardStats;
+  form_summary?: FormSummary | null;
 };
 
 const runs: Run[] = [
@@ -55,6 +86,7 @@ const runs: Run[] = [
     status: "above",
     description: "Dobry sygnał szybkości. Ten wynik nie jest jeszcze samodzielną prognozą półmaratonu, ale daje mocny punkt odniesienia.",
     isRunning: true,
+    analysis: null,
   },
   {
     id: "easy-2026-11-20",
@@ -68,6 +100,7 @@ const runs: Run[] = [
     status: "steady",
     description: "Równa praca i spokojne tętno. W drugiej połowie lekko wzrosło obciążenie, ale bez sygnału do zmiany planu.",
     isRunning: true,
+    analysis: null,
   },
   {
     id: "intervals-2026-11-18",
@@ -81,10 +114,10 @@ const runs: Run[] = [
     status: "easy",
     description: "Odcinki były wykonane dynamicznie, a przerwy pozwoliły na dobrą kontrolę wysiłku.",
     isRunning: true,
+    analysis: null,
   },
 ];
 
-const weeklyBars = [48, 66, 52, 78, 62, 87, 74, 91, 68, 80, 72, 96];
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
 function mapDashboardActivities(payload: { activities?: DashboardActivity[] }): Run[] {
@@ -106,6 +139,7 @@ function mapDashboardActivities(payload: { activities?: DashboardActivity[] }): 
       status,
       description: analysis?.summary || "Analiza AI oczekuje na wykonanie.",
       isRunning: activity.sport === "running",
+      analysis,
     };
   });
 }
@@ -115,7 +149,7 @@ export default function App() {
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [liveRuns, setLiveRuns] = useState<Run[] | null>(null);
+  const [liveDashboard, setLiveDashboard] = useState<DashboardPayload | null>(null);
 
   useEffect(() => {
     if (API_BASE_URL) void loadDashboard();
@@ -124,7 +158,7 @@ export default function App() {
   async function loadDashboard() {
     const response = await fetch(`${API_BASE_URL}/api/dashboard`);
     if (!response.ok) return;
-    setLiveRuns(mapDashboardActivities(await response.json()));
+    setLiveDashboard(await response.json());
   }
 
   async function sync() {
@@ -190,8 +224,8 @@ export default function App() {
           </div>
         </header>
 
-        {page === "dashboard" && <Dashboard runsData={liveRuns || runs} isLive={liveRuns !== null} onOpenRun={(run) => { setSelectedRun(run); setPage("runs"); }} onOpenChat={() => goTo("chat")} />}
-        {page === "runs" && <RunsPage runsData={liveRuns || runs} selectedRun={selectedRun} onSelect={setSelectedRun} />}
+        {page === "dashboard" && <Dashboard runsData={liveDashboard ? mapDashboardActivities(liveDashboard) : runs} stats={liveDashboard?.stats} formSummary={liveDashboard?.form_summary} onOpenRun={(run) => { setSelectedRun(run); setPage("runs"); }} onOpenChat={() => goTo("chat")} />}
+        {page === "runs" && <RunsPage runsData={liveDashboard ? mapDashboardActivities(liveDashboard) : runs} selectedRun={selectedRun} onSelect={setSelectedRun} />}
         {page === "chat" && <ChatPage />}
         {page === "settings" && <SettingsPage />}
       </main>
@@ -212,49 +246,48 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
   return <button className={`nav-button ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
-function Dashboard({ runsData, isLive, onOpenRun, onOpenChat }: { runsData: Run[]; isLive: boolean; onOpenRun: (run: Run) => void; onOpenChat: () => void }) {
-  const runningRuns = runsData.filter((run) => run.isRunning);
-  const totalKm = runningRuns.reduce((sum, run) => sum + (Number.parseFloat(run.distance.replace(/[^0-9,.-]/g, "").replace(",", ".")) || 0), 0);
-  const heartRates = runningRuns.map((run) => Number.parseInt(run.heartRate, 10)).filter((value) => Number.isFinite(value));
-  const averageHeartRate = heartRates.length ? Math.round(heartRates.reduce((sum, value) => sum + value, 0) / heartRates.length) : 0;
-  const fastestPace = runningRuns.map((run) => run.pace).filter((pace) => pace !== "—").sort()[0] || "—";
-  const latestRun = runsData[0];
+function Dashboard({ runsData, stats, formSummary, onOpenRun, onOpenChat }: { runsData: Run[]; stats?: DashboardStats; formSummary?: FormSummary | null; onOpenRun: (run: Run) => void; onOpenChat: () => void }) {
+  const weeklyVolume = stats?.weekly_volume || [];
+  const volumeMax = Math.max(...weeklyVolume.map((item) => item.km), 1);
+  const summary = formSummary?.summary || "Po synchronizacji pojawi się krótkie podsumowanie Twojej formy.";
+  const recommendationTitle = formSummary?.recommendation_title || "Następny krok";
+  const recommendationText = formSummary?.recommendation_text || "Zsynchronizuj aktywności, aby trener mógł przygotować rekomendację.";
   return (
     <div className="page-stack">
       <section className="hero-card">
         <div className="hero-copy">
           <div className="eyebrow pale">TWOJA FORMA · OSTATNIE 28 DNI</div>
-          <h2>{isLive && latestRun ? `Ostatnio: ${latestRun.title}.` : "Masz dobry sygnał szybkości."}<br /><em>{isLive ? "Dane są aktualne." : "Teraz budujemy wytrzymałość."}</em></h2>
-          <p>{isLive ? `Garmin zwrócił ${runsData.length} aktywności, w tym ${runningRuns.length} biegów. Ostatnia aktywność: ${latestRun?.date || "brak daty"}.` : "Benchmark z 22 listopada był mocny. Kolejny krok to spokojna, regularna objętość — bez pogoni za tempem na każdym treningu."}</p>
+          <h2>Twoja forma.<br /><em>{formSummary?.readiness_label || "Czekam na dane"}</em></h2>
+          <p>{summary}</p>
           <button className="light-button" onClick={onOpenChat}>Zapytaj trenera <ChevronRight size={16} /></button>
         </div>
         <div className="hero-score">
-          <div className="score-ring"><span>78</span><small>/ 100</small></div>
+          <div className="score-ring"><span>{formSummary?.readiness_score ?? "—"}</span><small>/ 100</small></div>
           <span>Ocena gotowości</span>
-          <strong>Stabilnie</strong>
+          <strong>{formSummary?.readiness_label || "Brak oceny"}</strong>
         </div>
       </section>
 
       <section className="metric-grid">
-        <MetricCard icon={<Trophy size={17} />} label="Najszybsze tempo" value={isLive ? fastestPace : "4:57"} unit="/km" caption={isLive ? "W pobranych biegach" : "Benchmark 5 min"} tone="green" />
-        <MetricCard icon={<Activity size={17} />} label="Dystans biegowy" value={isLive ? totalKm.toFixed(2).replace(".", ",") : "18,3"} unit="km" caption={isLive ? "W pobranych aktywnościach" : "+12% vs poprzedni"} tone="blue" />
-        <MetricCard icon={<HeartPulse size={17} />} label="Śr. tętno biegu" value={isLive && averageHeartRate ? String(averageHeartRate) : "143"} unit="bpm" caption={isLive ? "Z danych Garmina" : "W Twojej bazie"} tone="orange" />
-        <MetricCard icon={<TrendingUp size={17} />} label="Biegów" value={isLive ? String(runningRuns.length) : "3 / 4"} unit={isLive ? "" : "biegów"} caption={isLive ? "W pobranym zakresie" : "Cel tygodnia"} tone="purple" />
+        <MetricCard icon={<Activity size={17} />} label="Dystans biegowy" value={stats ? stats.week_distance_km.toLocaleString("pl-PL", { maximumFractionDigits: 1 }) : "—"} unit="km" caption="Ten tydzień" tone="blue" />
+        <MetricCard icon={<CalendarDays size={17} />} label="Dystans biegowy" value={stats ? stats.month_distance_km.toLocaleString("pl-PL", { maximumFractionDigits: 1 }) : "—"} unit="km" caption="Ten miesiąc" tone="green" />
+        <MetricCard icon={<TrendingUp size={17} />} label="Liczba biegów" value={stats ? String(stats.run_count_week) : "—"} unit="" caption="Ten tydzień" tone="purple" />
+        <MetricCard icon={<Sparkles size={17} />} label="Ocena gotowości" value={formSummary?.readiness_label || "—"} unit="" caption="Na podstawie kontekstu" tone="orange" />
       </section>
 
       <div className="content-grid">
         <section className="card chart-card">
           <div className="section-heading"><div><div className="eyebrow">OBCIĄŻENIE BIEGOWE</div><h2>Objętość z ostatnich tygodni</h2></div><span className="select-chip">12 tygodni <ChevronRight size={14} /></span></div>
-          <div className="chart-summary"><strong>52,7 km</strong><span><span className="trend-up">↗ 8,4%</span> vs poprzednie 12 tyg.</span></div>
-          <div className="bar-chart" aria-label="Wykres objętości biegowej">{weeklyBars.map((height, index) => <div className="bar-column" key={index}><div className={`bar ${index === weeklyBars.length - 1 ? "current" : ""}`} style={{ height: `${height}%` }} /><span>{index % 3 === 0 ? `T${index + 1}` : ""}</span></div>)}</div>
+          <div className="chart-summary"><strong>{weeklyVolume.reduce((sum, item) => sum + item.km, 0).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} km</strong><span>ostatnie 12 tygodni</span></div>
+          <div className="bar-chart" aria-label="Wykres objętości biegowej">{weeklyVolume.map((item, index) => <div className="bar-column" key={item.label}><div className={`bar ${index === weeklyVolume.length - 1 ? "current" : ""}`} style={{ height: `${Math.max((item.km / volumeMax) * 100, item.km ? 8 : 2)}%` }} /><span>{item.label}</span></div>)}</div>
           <div className="chart-legend"><span><i className="legend-dot green" />Kilometry biegowe</span><span><i className="legend-line" />Trend regularności</span></div>
         </section>
         <section className="card recommendation-card">
           <div className="section-heading"><div><div className="eyebrow">REKOMENDACJA NA DZIŚ</div><h2>Co teraz?</h2></div><Sparkles size={20} className="sparkle" /></div>
           <div className="recommendation-icon"><CloudSun size={25} /></div>
-          <h3>Trzymaj spokojny plan</h3>
-          <p>Po wczorajszym teście daj układowi nerwowemu dzień bez intensywności. Lekki bieg lub odpoczynek będą lepszym bodźcem niż kolejny szybki trening.</p>
-          <div className="recommendation-proof"><Check size={15} /> Rekomendacja oparta na 10 ostatnich aktywnościach</div>
+          <h3>{recommendationTitle}</h3>
+          <p>{recommendationText}</p>
+          <div className="recommendation-proof"><Check size={15} /> Rekomendacja oparta na kontekście treningowym</div>
           <button className="text-button" onClick={onOpenChat}>Zobacz uzasadnienie <ChevronRight size={15} /></button>
         </section>
       </div>
@@ -282,7 +315,13 @@ function RunsPage({ runsData, selectedRun, onSelect }: { runsData: Run[]; select
 }
 
 function RunDetail({ run, onBack }: { run: Run; onBack: () => void }) {
-  return <div className="page-stack"><button className="back-button" onClick={onBack}>← Wróć do treningów</button><section className="detail-head"><div><div className="eyebrow">{run.date} · {run.type.toUpperCase()}</div><h2>{run.title}</h2><p>Demo — szczegóły zostaną zasilone danymi z Garmin Connect.</p></div><div className={`status-tag ${run.status}`}>{run.status === "above" ? "Powyżej oczekiwań" : "Stabilnie"}</div></section><section className="metric-grid detail-metrics"><MetricCard icon={<Activity size={17} />} label="Dystans" value={run.distance.replace(" km", "")} unit=" km" caption="Cała sesja" tone="green" /><MetricCard icon={<Timer size={17} />} label="Tempo" value={run.pace} unit="/km" caption="Średnie z sesji" tone="blue" /><MetricCard icon={<HeartPulse size={17} />} label="Średnie tętno" value={run.heartRate} unit=" bpm" caption="Dane z zegarka" tone="orange" /><MetricCard icon={<Clock3 size={17} />} label="Czas" value={run.duration} unit="" caption="Czas ruchu" tone="purple" /></section><section className="content-grid"><article className="card analysis-card"><div className="eyebrow">ANALIZA AI</div><h2>{run.description}</h2><div className="evidence"><Check size={15} /> Analiza bez założeń planu treningowego</div></article><article className="card note-card"><div className="eyebrow">UZUPEŁNIJ TRENING</div><h2>Jak Ci się biegło?</h2><textarea placeholder="Opcjonalna notatka, odczuwalna trudność, ból…" /><button className="primary-button">Zapisz notatkę</button><small>Demo: zapis do prywatnego repozytorium zostanie podłączony w kolejnym etapie.</small></article></section></div>;
+  const analysis = run.analysis;
+  return <div className="page-stack">
+    <button className="back-button" onClick={onBack}>← Wróć do treningów</button>
+    <section className="detail-head"><div><div className="eyebrow">{run.date} · {run.type.toUpperCase()}</div><h2>{run.title}</h2><p>{run.isRunning ? "Indywidualna opinia AI na tle wcześniejszych aktywności." : "Ta aktywność nie ma osobnej analizy, ale została uwzględniona w kontekście treningowym."}</p></div><div className={`status-tag ${run.status}`}>{run.isRunning ? (run.status === "above" ? "Powyżej oczekiwań" : "Stabilnie") : "Kontekst"}</div></section>
+    <section className="metric-grid detail-metrics"><MetricCard icon={<Activity size={17} />} label="Dystans" value={run.distance.replace(" km", "")} unit=" km" caption="Cała sesja" tone="green" /><MetricCard icon={<Timer size={17} />} label="Tempo" value={run.pace} unit="/km" caption="Średnie z sesji" tone="blue" /><MetricCard icon={<HeartPulse size={17} />} label="Średnie tętno" value={run.heartRate} unit=" bpm" caption="Dane z zegarka" tone="orange" /><MetricCard icon={<Clock3 size={17} />} label="Czas" value={run.duration} unit="" caption="Czas ruchu" tone="purple" /></section>
+    <section className="content-grid"><article className="card analysis-card"><div className="eyebrow">{run.isRunning ? "ANALIZA AI" : "KONTEKST TRENINGOWY"}</div><h2>{run.isRunning ? run.description : "Bez osobnej analizy tej aktywności"}</h2>{analysis?.recommendation_text && <p>{analysis.recommendation_text}</p>}{analysis?.positives?.length ? <><div className="eyebrow">CO BYŁO DOBRE</div><ul>{analysis.positives.map((item) => <li key={item}>{item}</li>)}</ul></> : null}{analysis?.risks?.length ? <><div className="eyebrow">NA CO UWAŻAĆ</div><ul>{analysis.risks.map((item) => <li key={item}>{item}</li>)}</ul></> : null}<div className="evidence"><Check size={15} /> {run.isRunning ? "Analiza uwzględnia kontekst wcześniejszych aktywności." : "Aktywność pozostaje w historii, ale nie generuje osobnej opinii."}</div></article><article className="card note-card"><div className="eyebrow">UZUPEŁNIJ TRENING</div><h2>Jak Ci się biegło?</h2><textarea placeholder="Opcjonalna notatka, odczuwalna trudność, ból…" /><button className="primary-button">Zapisz notatkę</button><small>Notatki dołączymy do prywatnego kontekstu treningowego.</small></article></section>
+  </div>;
 }
 
 function ChatPage() {
